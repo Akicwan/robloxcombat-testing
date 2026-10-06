@@ -1,0 +1,87 @@
+-- Studio-only live integration checks against the running CombatService.
+local Combat=require(game.ServerScriptService.CombatService)
+local Config=require(game.ReplicatedStorage.ParryCombat.Config)
+local results={}
+local a=workspace.ParryArena.TrainingPartner:Clone() a.Name="QA_Attacker" a.Parent=workspace
+local b=a:Clone() b.Name="QA_Defender" b.Parent=workspace
+local sa=Combat.Register(a,false) local sb=Combat.Register(b,false)
+a.HumanoidRootPart.Anchored=true b.HumanoidRootPart.Anchored=true
+local function reset()
+    Combat.Reset(sa,CFrame.new(500,6,0))
+    Combat.Reset(sb,CFrame.lookAt(Vector3.new(500,6,-5),Vector3.new(500,6,0)))
+end
+local function check(name,condition,detail)
+    table.insert(results,{name=name,passed=condition,detail=detail})
+end
+local ok,err=pcall(function()
+    reset() Combat.Action(sa,"Light") task.wait(0.34)
+    check("M1 causes no damage before the late contact pose",b.Humanoid.Health==150,b.Humanoid.Health)
+    task.wait(0.27)
+    check("Light hits exactly once",b.Humanoid.Health==138,b.Humanoid.Health)
+    reset() Combat.Action(sa,"Heavy") task.wait(0.9)
+    check("Heavy damage",b.Humanoid.Health==126,b.Humanoid.Health)
+    reset() Combat.Action(sa,"Light") task.wait(0.1)
+    local canceled=Combat.Action(sa,"Cancel") task.wait(0.55)
+    check("Feint cancels pending damage",canceled and b.Humanoid.Health==150,b.Humanoid.Health)
+    reset() Combat.Action(sa,"Heavy") task.wait(0.1)
+    check("Heavy is committed",not Combat.Action(sa,"Cancel")) task.wait(0.85)
+    reset() Combat.Action(sa,"Light") task.wait(0.35) Combat.Action(sb,"Parry") task.wait(0.2)
+    check("Parry prevents damage and stuns attacker",b.Humanoid.Health==150 and sa.state=="Stunned",sa.state)
+    check("Successful parry refreshes cooldown",sb.parryReady==0,sb.parryReady)
+    reset() Combat.Action(sb,"Parry") Combat.Action(sb,"BlockEnd") task.wait(0.3)
+    Combat.Action(sa,"Light") task.wait(0.61)
+    check("Early missed parry is punishable",b.Humanoid.Health==138,b.Humanoid.Health)
+    reset() Combat.Action(sb,"Parry") task.wait(0.3) Combat.Action(sa,"Light") task.wait(0.61)
+    check("Holding F blocks and accumulates posture",b.Humanoid.Health==150 and sb.posture==25,sb.posture)
+    reset() Combat.Action(sb,"Parry") task.wait(0.3)
+    Combat.Action(sa,"Heavy") task.wait(0.84)
+    check("Critical breaks a fresh zero-posture block",sb.state=="GuardBroken",sb.state)
+    reset() Combat.Action(sa,"Heavy") task.wait(0.57) Combat.Action(sb,"Parry") task.wait(0.23)
+    check("Critical can still be parried",b.Humanoid.Health==150 and sa.state=="Stunned",sa.state)
+    reset() Combat.Action(sa,"Light") task.wait(0.34) Combat.Action(sb,"Dodge",Vector3.new(1,0,0)) task.wait(0.22)
+    check("Dodge iframe avoids damage",b.Humanoid.Health==150,b.Humanoid.Health)
+    reset() Combat.Action(sa,"Light") Combat.Action(sb,"Dodge",Vector3.new(1,0,0)) task.wait(0.12)
+    local rolled=Combat.Action(sb,"Cancel") task.wait(0.48)
+    check("Roll cancel ends invulnerability",rolled and b.Humanoid.Health==138,b.Humanoid.Health)
+    reset() Combat.Action(sa,"Dodge",Vector3.new(1,0,0))
+    check("Immediate roll cancel rejected",not Combat.Action(sa,"Cancel"))
+    task.wait(0.52)
+    check("Dodge cooldown prevents spam",not Combat.Action(sa,"Dodge",Vector3.new(1,0,0)))
+    reset() Combat.Action(sa,"Light")
+    check("Attack spam cannot bypass recovery",not Combat.Action(sa,"Light")) task.wait(0.7)
+    reset() b:PivotTo(CFrame.new(500,6,-20)) Combat.Action(sa,"Light") task.wait(0.61)
+    check("Out of range target takes no damage",b.Humanoid.Health==150)
+    reset() local wall=Instance.new("Part") wall.Size=Vector3.new(8,12,1) wall.CFrame=CFrame.new(500,6,-2.5) wall.Anchored=true wall.Parent=workspace
+    Combat.Action(sa,"Light") task.wait(0.61)
+    check("Walls block melee hits",b.Humanoid.Health==150) wall:Destroy()
+    reset()
+    local chain={} local damageByHit={}
+    for i=1,4 do
+        local before=b.Humanoid.Health
+        Combat.Action(sa,"Light") table.insert(chain,sa.combo)
+        local data=Config.Attack("Light",sa.combo)
+        task.wait(data.Windup+data.Active+data.Recovery+0.04)
+        table.insert(damageByHit,before-b.Humanoid.Health)
+    end
+    check("M1 chain reaches exactly four distinct attacks",table.concat(chain,",")=="1,2,3,4",table.concat(chain,","))
+    check("Fourth attack has finisher damage",damageByHit[4]==16,damageByHit[4])
+    Combat.Action(sa,"Light")
+    check("Attack after fourth restarts at one",sa.combo==1,sa.combo)
+    task.wait(0.82)
+    reset() sa.combo=3 sa.lastAttack=workspace:GetServerTimeNow()
+    local floor=Instance.new("Part") floor.Name="QA_Floor" floor.Size=Vector3.new(50,1,50) floor.Position=Vector3.new(500,0,0) floor.Anchored=true floor.Parent=workspace
+    b:PivotTo(CFrame.lookAt(Vector3.new(500,3.5,-5),Vector3.new(500,3.5,0)))
+    a:PivotTo(CFrame.new(500,3.5,0))
+    b.HumanoidRootPart.Anchored=false b.HumanoidRootPart:SetNetworkOwner(nil)
+    local original=b.HumanoidRootPart.Position
+    Combat.Action(sa,"Light") task.wait(0.92)
+    local distance=(Vector3.new(b.HumanoidRootPart.Position.X,0,b.HumanoidRootPart.Position.Z)-Vector3.new(original.X,0,original.Z)).Magnitude
+    check("Fourth hit physically separates the opponent",distance>5 and distance<12,string.format("%.2f studs",distance))
+    b.HumanoidRootPart.Anchored=true floor:Destroy()
+    reset() sa.combo=3 sa.lastAttack=workspace:GetServerTimeNow()
+    Combat.Action(sb,"Parry") task.wait(0.3) Combat.Action(sa,"Light") task.wait(0.66)
+    check("Blocking the finisher prevents its knockback",(sb.knockUntil or 0)==0 and b.Humanoid.Health==150)
+end)
+a:Destroy() b:Destroy()
+if not ok then table.insert(results,{name="Runtime error",passed=false,detail=tostring(err)}) end
+return game.HttpService:JSONEncode(results)

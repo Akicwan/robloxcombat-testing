@@ -1,0 +1,15 @@
+# Local credentials and environment settings
+.env
+.env.*
+!.env.example
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
